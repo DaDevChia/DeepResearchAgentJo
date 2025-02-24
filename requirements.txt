@@ -5,4 +5,4 @@ beautifulsoup4
 PyPDF2
 agentjo
 openai
-weasyprint
+reportlab
