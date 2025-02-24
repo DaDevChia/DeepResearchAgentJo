@@ -1,0 +1,8 @@
+streamlit
+aiohttp
+feedparser
+beautifulsoup4
+PyPDF2
+agentjo
+openai
+weasyprint
