@@ -7,21 +7,18 @@ import urllib.parse
 from bs4 import BeautifulSoup
 import io
 import PyPDF2
-from agentjo import strict_json_async  # Assuming agentjo is pip installable
+from agentjo import strict_json_async
 from weasyprint import HTML, CSS
 from weasyprint.text.fonts import FontConfiguration
 
-# --- Utility Functions (from your notebook, with modifications) ---
+# --- Utility Functions ---
 async def llm(system_prompt: str, user_prompt: str) -> str:
     ''' Here, we use OpenAI for illustration, you can change it to your own LLM '''
-    # ensure your LLM imports are all within this function
     from openai import AsyncOpenAI
     
-    # define your own LLM here
     client = AsyncOpenAI(api_key=st.session_state.openai_api_key)
     response = await client.chat.completions.create(
-        model='o3-mini',  # Changed back to o3-mini
-        # temperature = 0,
+        model='o3-mini',
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -96,7 +93,6 @@ async def async_extract_html_text(html_url, session):
         return f"Error retrieving HTML text: {str(e)}"
     
 async def async_retrieve_important(user_output: str, metadata_text: str):
-    '''Retrieve what is important to user_output from metadata_text'''
     res = await strict_json_async(f'''From the Text, extract useful information for query: ```{user_output}```
 You must put all details so that another person can understand without referencing the Text.
 You must output quantitative results and detailed descriptions whenever applicable.
@@ -117,18 +113,14 @@ async def search_arxiv(query, user_output, session):
     formatted_query = format_arxiv_query(query)
     query_url = f"{base_url}search_query={formatted_query}&start=0&max_results=10"
 
-    # Fetch the arXiv feed asynchronously.
     xml_data = await async_fetch_feed(query_url, session)
     feed = feedparser.parse(xml_data)
     
-    # Schedule tasks for retrieving BibTeX entries and metadata concurrently.
     bibtex_tasks = []
     metadata_tasks = []
     for entry in feed.entries:
-        # BibTeX task
         bibtex_tasks.append(async_get_bibtex_entry(entry, session))
         
-        # Determine PDF and HTML URLs.
         pdf_url = None
         html_url = None
         if hasattr(entry, 'links'):
@@ -138,43 +130,52 @@ async def search_arxiv(query, user_output, session):
                 elif link.get('rel') == 'alternate':
                     html_url = link.href
         
-        # Metadata task: try PDF first, then HTML.
         if pdf_url:
             metadata_tasks.append(async_extract_pdf_text(pdf_url, session))
         elif html_url:
             metadata_tasks.append(async_extract_html_text(html_url, session))
         else:
-            # If no PDF or HTML link is available, return a default message.
             metadata_tasks.append(asyncio.sleep(0, result = entry.summary.strip()))
     
-    # Await all BibTeX and metadata tasks concurrently.
     bibtex_entries = await asyncio.gather(*bibtex_tasks)
     metadata_texts = await asyncio.gather(*metadata_tasks)
 
-    # make bibtex_entries into dict form
     bibtex_dict = {extract_citation_key(bibtex_entry): bibtex_entry for bibtex_entry in bibtex_entries}
 
-    # Get the important information out
     synthesis_tasks = [async_retrieve_important(user_output, metadata_texts[i]) for i in range(len(metadata_texts))]
     important_information = await asyncio.gather(*synthesis_tasks)
     
     return bibtex_dict, important_information
 
-
-
 async def generate_report(bibtex_dict, important_information, user_output, report_format):
-    biblatex = '\n'.join(list(bibtex_dict.values()))
+    citation_list = ""
+    for i, (cite_key, bibtex_entry) in enumerate(bibtex_dict.items()):
+        url_match = re.search(r'url\s*=\s*\{([^}]+)\}', bibtex_entry)
+        url = url_match.group(1) if url_match else "#"
+       
+        author_match = re.search(r'author\s*=\s*\{([^}]+)\}', bibtex_entry)
+        author = author_match.group(1) if author_match else "Unknown Author"
+
+        year_match = re.search(r'year\s*=\s*\{([^}]+)\}', bibtex_entry)
+        year = year_match.group(1) if year_match else "Unknown Year"
+
+        title_match = re.search(r'title\s*=\s*\{([^}]+)\}', bibtex_entry)
+        title = title_match.group(1) if title_match else "Unknown Title"
+
+        citation_list += f"[{i+1}]: {author}. ({year}). {title}. Retrieved from {url}\n"
 
     if report_format == "Markdown":
-        res = await strict_json_async(f'''Generate a research report in markdown format for the query: ```{user_output}```
-If format is specified, follow format strictly.
-You must do in-line citation with the [[1]], [[2]], [[3]] ... whenever possible. 
-Link the citation url in the [[1]], [[2]], [[3]]
-Use as many sources as possible for each section of the report
-At the end of the report, list out all the sources using:
-```{}[source_number]: APA citation```
-
-Citation Details: ```{bibtex_dict}```''',
+        prompt = f'''Generate a research report in markdown format for the query: ```{user_output}```
+        If format is specified, follow format strictly.
+        You must do in-line citation with the [[1]], [[2]], [[3]] ... whenever possible. 
+        Link the citation url in the [[1]], [[2]], [[3]]
+        Use as many sources as possible for each section of the report
+        At the end of the report, include the following premade citation list:
+        ```
+        {citation_list}
+        ```
+        '''
+        res = await strict_json_async(prompt,
                 important_information,
                 output_format = {"Research Report": "Include citations, be as detailed as possible, type: str"},
                 llm = llm)
@@ -183,22 +184,22 @@ Citation Details: ```{bibtex_dict}```''',
         return report
 
     elif report_format == "HTML":
-        # Generate HTML (similar to Markdown, but with HTML tags)
-        res = await strict_json_async(f'''Generate a research report in HTML format for the query: ```{user_output}```
-If format is specified, follow format strictly.
-You must do in-line citation with the <a href="#cite1">[1]</a>, <a href="#cite2">[2]</a>, <a href="#cite3">[3]</a> ... whenever possible. 
-Use as many sources as possible for each section of the report
-At the end of the report, list out all the sources using:
-<div id="cite1">[1]: APA citation</div>
-
-Citation Details: ```{bibtex_dict}```''',
+        prompt = f'''Generate a research report in HTML format for the query: ```{user_output}```
+        If format is specified, follow format strictly.
+        You must do in-line citation with the <a href="#cite1">[1]</a>, <a href="#cite2">[2]</a>, <a href="#cite3">[3]</a> ... whenever possible. 
+        Use as many sources as possible for each section of the report.
+        At the end of the report, include the following premade citation list, using HTML:
+        ```html
+        {citation_list}
+        ```
+        '''
+        res = await strict_json_async(prompt,
                 important_information,
                 output_format={"Research Report": "Include citations, be as detailed as possible, type: str"},
                 llm=llm)
 
         report_html = res["Research Report"]
 
-        # Wrap in basic HTML structure for WeasyPrint
         report_html = f"""
         <!DOCTYPE html>
         <html>
@@ -208,7 +209,6 @@ Citation Details: ```{bibtex_dict}```''',
             <style>
                 body {{ font-family: sans-serif; }}
                 h1, h2, h3 {{ color: #333; }}
-                /* Add more styling as needed */
             </style>
         </head>
         <body>
@@ -221,48 +221,38 @@ Citation Details: ```{bibtex_dict}```''',
       return "Invalid format"
 
 def generate_pdf_weasyprint(html_content):
-    """Generates a PDF from HTML content using WeasyPrint."""
     font_config = FontConfiguration()
     html = HTML(string=html_content)
     pdf = html.write_pdf(font_config=font_config)
     return pdf
 
-
 # --- Streamlit App ---
-
-async def main():  # Make main async
+async def main():
     st.title("Deep Research arXiv Paper Summarizer")
 
-    # Input for OpenAI API Key
     if "openai_api_key" not in st.session_state:
         st.session_state.openai_api_key = ""
     openai_api_key = st.text_input("Enter your OpenAI API Key:", type="password", value=st.session_state.openai_api_key)
     if openai_api_key:
         st.session_state.openai_api_key = openai_api_key
 
-
-    # Input for arXiv Search Query
     user_query = st.text_input("Enter your search query for arXiv papers:", "memory adaptive neuroscience")
 
-    # Input for User Output Format (can be a file upload)
     user_output = st.text_area("Enter the desired output format:", '''What is memory?
-Required output format:
-1. Introduction
-2. Types of Memory
-3. How Memory can be adaptive
-4. How Memory schema is created
-5. Future focus areas on memory
-6. Conclusion''')
+    Required output format:
+    1. Introduction
+    2. Types of Memory
+    3. How Memory can be adaptive
+    4. How Memory schema is created
+    5. Future focus areas on memory
+    6. Conclusion''')
     
     report_format = st.selectbox("Select Report Format:", ["Markdown", "HTML"])
 
-
-    # File Uploader for Custom Prompts (optional)
     uploaded_file = st.file_uploader("Upload a custom prompt file (optional)", type=["txt"])
     if uploaded_file is not None:
         string_data = uploaded_file.read().decode("utf-8")
-        user_output = string_data  # Override user_output with file content
-
+        user_output = string_data
 
     if st.button("Generate Report"):
         if not st.session_state.openai_api_key:
@@ -278,7 +268,6 @@ Required output format:
                 if report_format == "Markdown":
                     st.markdown(report)
                 elif report_format == "HTML":
-                    # Generate PDF from HTML
                     pdf_bytes = generate_pdf_weasyprint(report)
                     st.download_button(
                         label="Download PDF",
@@ -287,11 +276,8 @@ Required output format:
                         mime="application/pdf"
                     )
 
-
             except Exception as e:
                 st.error(f"An error occurred: {e}")
 
-
-# Run the app
 if __name__ == "__main__":
-    asyncio.run(main()) # Run the main function using asyncio.run
+    asyncio.run(main())
