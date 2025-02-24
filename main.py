@@ -243,7 +243,7 @@ async def main():  # Make main async
     if openai_api_key:
         st.session_state.openai_api_key = openai_api_key
 
-    available_reasoning_model_list = ["o1", "o1-preview", "o1-mini", "o3-mini"]
+    available_reasoning_model_list = ["gpt-4o", "o1", "o1-preview", "o1-mini", "o3-mini"]
     if "llm_model_name" not in st.session_state:
         st.session_state.llm_model_name = available_reasoning_model_list[0]
     llm_model_name = st.selectbox("Select the reasoning model LLM Model Name", available_reasoning_model_list)
