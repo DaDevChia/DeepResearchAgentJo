@@ -27,7 +27,7 @@ async def llm(system_prompt: str, user_prompt: str) -> str:
         model=st.session_state.llm_model_name,
         # temperature = 0,
         messages=[
-            {"role": "developer", "content": system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
     )
